@@ -149,7 +149,7 @@ def _cancel_live(chat_id: int):
 
 # ─── Ядро: перевірити позиції і надіслати зміни ─────────────────────────────
 
-async def check_and_notify(address: str, label: str, chat_id: int):
+async def check_and_notify(address: str, label: str, chat_id: int, thread_id: int = None):
     import time
     async with _get_lock(address):
         _last_checked[address] = time.monotonic()
@@ -169,6 +169,7 @@ async def check_and_notify(address: str, label: str, chat_id: int):
             text = tracker.format_change(change, label, address, current_price=price)
             await bot.send_message(
                 chat_id, text,
+                message_thread_id=thread_id,
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
             )
@@ -186,10 +187,10 @@ async def on_ws_event(address: str, event_type: str, data):
     wallet = await storage.get_wallet(address)
     if not wallet:
         return
-    _, label, chat_id = wallet
+    _, label, chat_id, thread_id = wallet
     logger.info(f"WS event [{event_type}] for {address[:8]}...")
     await asyncio.sleep(0.6)
-    await check_and_notify(address, label, chat_id)
+    await check_and_notify(address, label, chat_id, thread_id)
 
 
 # ─── Команди ────────────────────────────────────────────────────────────────
@@ -260,7 +261,8 @@ async def cmd_add(message: types.Message):
         return
 
     positions = hyperliquid.parse_positions(state)
-    await storage.add_wallet(address, label, message.chat.id)
+    thread_id = message.message_thread_id
+    await storage.add_wallet(address, label, message.chat.id, thread_id)
     for coin, pos in positions.items():
         await storage.save_snapshot(address, coin, pos)
     if ws_client:
@@ -330,7 +332,7 @@ async def send_wallet_list(chat_id: int):
     lines = [f"📋 <b>Відстежувані гаманці</b> ({len(wallets)}):"]
     buttons = []
 
-    for addr, label, _ in wallets:
+    for addr, label, _, __ in wallets:
         label_str = f"  <b>{label}</b>" if label else ""
         lines.append(f"\n• <code>{addr}</code>{label_str}")
         btn_label = f"🗑 {label}" if label else f"🗑 {addr[:8]}..."
@@ -372,7 +374,7 @@ async def cb_remove(callback: types.CallbackQuery):
     else:
         lines = [f"📋 <b>Відстежувані гаманці</b> ({len(wallets)}):"]
         buttons = []
-        for addr, lbl, _ in wallets:
+        for addr, lbl, _, __ in wallets:
             lbl_str = f"  <b>{lbl}</b>" if lbl else ""
             lines.append(f"\n• <code>{addr}</code>{lbl_str}")
             btn_label = f"🗑 {lbl}" if lbl else f"🗑 {addr[:8]}..."
@@ -416,12 +418,12 @@ async def margin_poll_loop():
         await asyncio.sleep(MARGIN_POLL_INTERVAL)
         try:
             wallets = await storage.get_all_wallets()
-            for address, label, chat_id in wallets:
+            for address, label, chat_id, thread_id in wallets:
                 last = _last_checked.get(address, 0)
                 if time.monotonic() - last < 1.5:
                     continue
                 try:
-                    await check_and_notify(address, label, chat_id)
+                    await check_and_notify(address, label, chat_id, thread_id)
                 except Exception as e:
                     logger.error(f"Margin poll error {address[:8]}: {e}")
                 await asyncio.sleep(0.2)

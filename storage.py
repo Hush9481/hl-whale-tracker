@@ -10,9 +10,15 @@ async def init_db():
                 address     TEXT PRIMARY KEY,
                 label       TEXT DEFAULT '',
                 chat_id     INTEGER NOT NULL,
+                thread_id   INTEGER DEFAULT NULL,
                 added_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Міграція: додаємо thread_id якщо таблиця вже існує без нього
+        try:
+            await db.execute("ALTER TABLE watched_wallets ADD COLUMN thread_id INTEGER DEFAULT NULL")
+        except Exception:
+            pass  # колонка вже є
         await db.execute("""
             CREATE TABLE IF NOT EXISTS position_snapshots (
                 address     TEXT NOT NULL,
@@ -25,11 +31,11 @@ async def init_db():
         await db.commit()
 
 
-async def add_wallet(address: str, label: str, chat_id: int):
+async def add_wallet(address: str, label: str, chat_id: int, thread_id: int = None):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT OR REPLACE INTO watched_wallets (address, label, chat_id) VALUES (?, ?, ?)",
-            (address.lower(), label, chat_id)
+            "INSERT OR REPLACE INTO watched_wallets (address, label, chat_id, thread_id) VALUES (?, ?, ?, ?)",
+            (address.lower(), label, chat_id, thread_id)
         )
         await db.commit()
 
@@ -44,16 +50,16 @@ async def remove_wallet(address: str):
 async def get_wallet(address: str):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT address, label, chat_id FROM watched_wallets WHERE address = ?",
+            "SELECT address, label, chat_id, thread_id FROM watched_wallets WHERE address = ?",
             (address.lower(),)
         ) as cursor:
             return await cursor.fetchone()
 
 
-async def get_all_wallets() -> list[tuple]:
+async def get_all_wallets() -> list:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT address, label, chat_id FROM watched_wallets"
+            "SELECT address, label, chat_id, thread_id FROM watched_wallets"
         ) as cursor:
             return await cursor.fetchall()
 
