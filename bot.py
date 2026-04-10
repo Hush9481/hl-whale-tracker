@@ -231,6 +231,7 @@ async def cmd_start(message: types.Message):
         "/remove <code>0xАДРЕСА</code> — видалити гаманець\n"
         "/lists — список з кнопками видалення\n"
         "/check <code>0xАДРЕСА</code> — live ціна + PnL\n"
+        "/setthread — надсилати всі алерти в цю гілку\n"
         "/myid — показати ID цього чату\n\n"
         "Зміни позицій приходять окремим повідомленням."
     )
@@ -317,15 +318,16 @@ async def _do_remove(chat_id: int, address: str):
 async def cmd_list(message: types.Message):
     if not is_allowed(message):
         return
-    await send_wallet_list(message.chat.id)
+    await send_wallet_list(message.chat.id, message.message_thread_id)
 
 
-async def send_wallet_list(chat_id: int):
+async def send_wallet_list(chat_id: int, thread_id: int = None):
     wallets = await storage.get_all_wallets()
     if not wallets:
         await bot.send_message(
             chat_id,
-            "Список порожній.\nДодайте: /add <code>0xАДРЕСА</code> [мітка]"
+            "Список порожній.\nДодайте: /add <code>0xАДРЕСА</code> [мітка]",
+            message_thread_id=thread_id,
         )
         return
 
@@ -342,7 +344,11 @@ async def send_wallet_list(chat_id: int):
         )])
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await bot.send_message(chat_id, "\n".join(lines), reply_markup=keyboard)
+    await bot.send_message(
+        chat_id, "\n".join(lines),
+        reply_markup=keyboard,
+        message_thread_id=thread_id,
+    )
 
 
 @dp.callback_query(F.data.startswith("remove:"))
@@ -384,6 +390,28 @@ async def cb_remove(callback: types.CallbackQuery):
             )])
         keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
         await callback.message.edit_text("\n".join(lines), reply_markup=keyboard)
+
+
+@dp.message(Command("setthread"))
+async def cmd_setthread(message: types.Message):
+    if not is_allowed(message):
+        return
+
+    chat_id = message.chat.id
+    thread_id = message.message_thread_id
+
+    wallets = await storage.get_all_wallets()
+    if not wallets:
+        await message.answer("Список гаманців порожній.")
+        return
+
+    for address, label, _, __ in wallets:
+        await storage.add_wallet(address, label, chat_id, thread_id)
+
+    thread_str = f" (thread {thread_id})" if thread_id else ""
+    await message.answer(
+        f"✅ Готово — {len(wallets)} гаманців тепер надсилають алерти в цю гілку{thread_str}"
+    )
 
 
 @dp.message(Command("check"))
