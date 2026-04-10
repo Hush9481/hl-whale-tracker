@@ -229,7 +229,7 @@ async def cmd_start(message: types.Message):
         "<b>Команди:</b>\n"
         "/add <code>0xАДРЕСА</code> [мітка] — додати гаманець\n"
         "/remove <code>0xАДРЕСА</code> — видалити гаманець\n"
-        "/list — список з кнопками видалення\n"
+        "/lists — список з кнопками видалення\n"
         "/check <code>0xАДРЕСА</code> — live ціна + PnL\n"
         "/myid — показати ID цього чату\n\n"
         "Зміни позицій приходять окремим повідомленням."
@@ -313,7 +313,7 @@ async def _do_remove(chat_id: int, address: str):
     await bot.send_message(chat_id, f"🗑 Видалено{label_str}\n<code>{address}</code>")
 
 
-@dp.message(Command("list"))
+@dp.message(Command("lists"))
 async def cmd_list(message: types.Message):
     if not is_allowed(message):
         return
