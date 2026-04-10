@@ -1,0 +1,429 @@
+import asyncio
+import logging
+from datetime import datetime
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.filters import Command
+from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+import storage
+import hyperliquid
+import tracker
+from config import TELEGRAM_BOT_TOKEN, POLL_INTERVAL, ALLOWED_CHATS
+from ws_manager import HLWebSocket
+
+logger = logging.getLogger(__name__)
+
+bot = Bot(
+    token=TELEGRAM_BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+)
+dp = Dispatcher()
+
+_locks: dict[str, asyncio.Lock] = {}
+_live_tasks: dict[int, asyncio.Task] = {}
+_last_checked: dict[str, float] = {}
+
+LIVE_UPDATE_INTERVAL = 5
+LIVE_TIMEOUT = 300
+MARGIN_POLL_INTERVAL = 2
+
+
+# ─── Перевірка доступу ───────────────────────────────────────────────────────
+
+def is_allowed(message: types.Message) -> bool:
+    """Повертає True якщо повідомлення з дозволеного чату/треду."""
+    chat_id = message.chat.id
+    thread_id = message.message_thread_id
+    logger.info(f"MSG from chat_id={chat_id} thread_id={thread_id} | allowed={ALLOWED_CHATS}")
+
+    if not ALLOWED_CHATS:
+        return True
+
+    for allowed_chat, allowed_thread in ALLOWED_CHATS:
+        if chat_id == allowed_chat:
+            if allowed_thread is None or allowed_thread == thread_id:
+                return True
+    return False
+
+
+def _get_lock(address: str) -> asyncio.Lock:
+    if address not in _locks:
+        _locks[address] = asyncio.Lock()
+    return _locks[address]
+
+
+# ─── Live-повідомлення ───────────────────────────────────────────────────────
+
+async def build_live_text(address: str) -> str:
+    state = await hyperliquid.get_user_state(address)
+    if state is None:
+        return "❌ Не вдалось отримати дані"
+
+    positions = hyperliquid.parse_positions(state)
+    prices = await hyperliquid.get_all_mids()
+    account_value = float(state.get("marginSummary", {}).get("accountValue", 0))
+    updated = datetime.now().strftime("%H:%M:%S")
+
+    if not positions:
+        return (
+            f"📊 <code>{address[:6]}...{address[-4:]}</code>\n"
+            f"Акаунт: <b>${account_value:,.2f}</b>\n\n"
+            "Немає відкритих позицій\n\n"
+            f"🕐 {updated}"
+        )
+
+    lines = [
+        f"📊 <code>{address[:6]}...{address[-4:]}</code>  "
+        f"Акаунт: <b>${account_value:,.2f}</b>\n",
+    ]
+
+    for coin, p in sorted(positions.items(), key=lambda x: -x[1]["position_value"]):
+        side_emoji = "🟢" if p["side"] == "LONG" else "🔴"
+        cur_px = prices.get(coin, 0)
+        upnl = p["unrealized_pnl"]
+        upnl_str = f"+${upnl:,.2f}" if upnl >= 0 else f"-${abs(upnl):,.2f}"
+        upnl_emoji = "📈" if upnl >= 0 else "📉"
+
+        liq_str = ""
+        if p["liquidation_price"] > 0 and cur_px > 0:
+            dist = tracker.liq_distance_pct(p, cur_px)
+            if dist is not None:
+                danger = " ‼️" if dist < tracker.LIQ_DANGER_PCT else ""
+                liq_str = f"  Liq: {dist:.1f}%{danger}"
+
+        cur_str = f"${cur_px:,.4f}" if cur_px else "—"
+
+        lines.append(
+            f"{side_emoji} <b>{coin}</b>  {p['side']}  {p['leverage']}x\n"
+            f"   Ціна: <b>{cur_str}</b>  |  Entry: ${p['entry_price']:,.4f}{liq_str}\n"
+            f"   uPnL: <b>{upnl_emoji} {upnl_str}</b>  (${p['position_value']:,.0f})\n"
+        )
+
+    lines.append(f"🕐 <i>Оновлено: {updated}</i>")
+    return "\n".join(lines)
+
+
+async def live_update_loop(chat_id: int, message_id: int, address: str):
+    elapsed = 0
+    while elapsed < LIVE_TIMEOUT:
+        await asyncio.sleep(LIVE_UPDATE_INTERVAL)
+        elapsed += LIVE_UPDATE_INTERVAL
+        try:
+            text = await build_live_text(address)
+            await bot.edit_message_text(
+                text, chat_id=chat_id, message_id=message_id,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+        except TelegramBadRequest as e:
+            if "message is not modified" in str(e):
+                continue
+            logger.warning(f"Live edit error: {e}")
+            break
+        except Exception as e:
+            logger.error(f"Live update error: {e}")
+            break
+
+    try:
+        text = await build_live_text(address)
+        stopped_at = datetime.now().strftime("%H:%M:%S")
+        text += f"\n\n⏹ <i>Зупинено о {stopped_at}  ·  /check щоб запустити знову</i>"
+        await bot.edit_message_text(
+            text, chat_id=chat_id, message_id=message_id,
+            parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+        )
+    except Exception:
+        pass
+
+    _live_tasks.pop(chat_id, None)
+
+
+def _cancel_live(chat_id: int):
+    task = _live_tasks.pop(chat_id, None)
+    if task and not task.done():
+        task.cancel()
+
+
+# ─── Ядро: перевірити позиції і надіслати зміни ─────────────────────────────
+
+async def check_and_notify(address: str, label: str, chat_id: int):
+    import time
+    async with _get_lock(address):
+        _last_checked[address] = time.monotonic()
+
+        state = await hyperliquid.get_user_state(address)
+        if state is None:
+            return
+
+        new_positions = hyperliquid.parse_positions(state)
+        old_positions = await storage.get_snapshots(address)
+        current_prices = await hyperliquid.get_all_mids()
+
+        changes = tracker.diff_positions(old_positions, new_positions)
+
+        for change in changes:
+            price = current_prices.get(change.coin)
+            text = tracker.format_change(change, label, address, current_price=price)
+            await bot.send_message(
+                chat_id, text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+
+        for coin in list(old_positions):
+            if coin not in new_positions:
+                await storage.delete_snapshot(address, coin)
+        for coin, pos in new_positions.items():
+            await storage.save_snapshot(address, coin, pos)
+
+
+# ─── WebSocket callback ──────────────────────────────────────────────────────
+
+async def on_ws_event(address: str, event_type: str, data):
+    wallet = await storage.get_wallet(address)
+    if not wallet:
+        return
+    _, label, chat_id = wallet
+    logger.info(f"WS event [{event_type}] for {address[:8]}...")
+    await asyncio.sleep(0.6)
+    await check_and_notify(address, label, chat_id)
+
+
+# ─── Команди ────────────────────────────────────────────────────────────────
+
+ws_client: HLWebSocket = None
+
+
+@dp.message(Command("myid"))
+async def cmd_myid(message: types.Message):
+    chat_id = message.chat.id
+    thread_id = message.message_thread_id
+    chat_type = message.chat.type
+
+    lines = [
+        "🔑 <b>Ідентифікатори чату</b>\n",
+        f"Chat ID: <code>{chat_id}</code>",
+        f"Тип: {chat_type}",
+    ]
+    if thread_id:
+        lines.append(f"Thread ID: <code>{thread_id}</code>")
+        lines.append(f"\nДодай в .env:")
+        lines.append(f"<code>ALLOWED_CHATS={chat_id}:{thread_id}</code>")
+    else:
+        lines.append(f"\nДодай в .env:")
+        lines.append(f"<code>ALLOWED_CHATS={chat_id}</code>")
+
+    await message.answer("\n".join(lines))
+
+
+@dp.message(Command("start", "help"))
+async def cmd_start(message: types.Message):
+    if not is_allowed(message):
+        return
+    await message.answer(
+        "🐋 <b>Hyperliquid Whale Tracker</b>\n\n"
+        "<b>Команди:</b>\n"
+        "/add <code>0xАДРЕСА</code> [мітка] — додати гаманець\n"
+        "/remove <code>0xАДРЕСА</code> — видалити гаманець\n"
+        "/list — список з кнопками видалення\n"
+        "/check <code>0xАДРЕСА</code> — live ціна + PnL\n"
+        "/myid — показати ID цього чату\n\n"
+        "Зміни позицій приходять окремим повідомленням."
+    )
+
+
+@dp.message(Command("add"))
+async def cmd_add(message: types.Message):
+    if not is_allowed(message):
+        return
+
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 2:
+        await message.answer("Використання: /add <code>0xАДРЕСА</code> [мітка]")
+        return
+
+    address = parts[1].strip().lower()
+    label = parts[2].strip() if len(parts) > 2 else ""
+
+    if not (address.startswith("0x") and len(address) == 42):
+        await message.answer("❌ Невалідна адреса. Формат: <code>0x...</code> (42 символи)")
+        return
+
+    msg = await message.answer("🔍 Перевіряю адресу...")
+
+    state = await hyperliquid.get_user_state(address)
+    if state is None:
+        await msg.edit_text("❌ Не вдалось підключитись до Hyperliquid API")
+        return
+
+    positions = hyperliquid.parse_positions(state)
+    await storage.add_wallet(address, label, message.chat.id)
+    for coin, pos in positions.items():
+        await storage.save_snapshot(address, coin, pos)
+    if ws_client:
+        await ws_client.subscribe(address)
+
+    label_str = f" <b>{label}</b>" if label else ""
+    pos_lines = []
+    for coin, p in positions.items():
+        side = "🟢 L" if p["side"] == "LONG" else "🔴 S"
+        margin = "cross" if p.get("is_cross") else "isolated"
+        pos_lines.append(f"  {side} {coin}  ${p['position_value']:,.0f}  {p['leverage']}x ({margin})")
+
+    pos_text = "\n".join(pos_lines) if pos_lines else "  (немає відкритих позицій)"
+    await msg.edit_text(
+        f"✅ Додано{label_str}\n"
+        f"<code>{address}</code>\n\n"
+        f"Поточні позиції:\n{pos_text}\n\n"
+        "⚡ WebSocket підписка активна"
+    )
+
+
+@dp.message(Command("remove"))
+async def cmd_remove(message: types.Message):
+    if not is_allowed(message):
+        return
+
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Використання: /remove <code>0xАДРЕСА</code>")
+        return
+
+    address = parts[1].strip().lower()
+    await _do_remove(message.chat.id, address)
+
+
+async def _do_remove(chat_id: int, address: str):
+    wallet = await storage.get_wallet(address)
+    if not wallet:
+        await bot.send_message(chat_id, "❌ Гаманець не знайдений в списку")
+        return
+
+    await storage.remove_wallet(address)
+    if ws_client:
+        await ws_client.unsubscribe(address)
+
+    label = wallet[1]
+    label_str = f" ({label})" if label else ""
+    await bot.send_message(chat_id, f"🗑 Видалено{label_str}\n<code>{address}</code>")
+
+
+@dp.message(Command("list"))
+async def cmd_list(message: types.Message):
+    if not is_allowed(message):
+        return
+    await send_wallet_list(message.chat.id)
+
+
+async def send_wallet_list(chat_id: int):
+    wallets = await storage.get_all_wallets()
+    if not wallets:
+        await bot.send_message(
+            chat_id,
+            "Список порожній.\nДодайте: /add <code>0xАДРЕСА</code> [мітка]"
+        )
+        return
+
+    lines = [f"📋 <b>Відстежувані гаманці</b> ({len(wallets)}):"]
+    buttons = []
+
+    for addr, label, _ in wallets:
+        label_str = f"  <b>{label}</b>" if label else ""
+        lines.append(f"\n• <code>{addr}</code>{label_str}")
+        btn_label = f"🗑 {label}" if label else f"🗑 {addr[:8]}..."
+        buttons.append([InlineKeyboardButton(
+            text=btn_label,
+            callback_data=f"remove:{addr}"
+        )])
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await bot.send_message(chat_id, "\n".join(lines), reply_markup=keyboard)
+
+
+@dp.callback_query(F.data.startswith("remove:"))
+async def cb_remove(callback: types.CallbackQuery):
+    if not is_allowed(callback.message):
+        await callback.answer("⛔ Доступ заборонено", show_alert=True)
+        return
+
+    address = callback.data.split(":", 1)[1]
+    wallet = await storage.get_wallet(address)
+
+    if not wallet:
+        await callback.answer("Вже видалено", show_alert=False)
+        await callback.message.delete()
+        return
+
+    await storage.remove_wallet(address)
+    if ws_client:
+        await ws_client.unsubscribe(address)
+
+    label = wallet[1]
+    label_str = f" ({label})" if label else ""
+    await callback.answer(f"Видалено{label_str}", show_alert=False)
+
+    # Оновлюємо список або видаляємо повідомлення якщо список порожній
+    wallets = await storage.get_all_wallets()
+    if not wallets:
+        await callback.message.edit_text("📋 Список порожній.")
+    else:
+        lines = [f"📋 <b>Відстежувані гаманці</b> ({len(wallets)}):"]
+        buttons = []
+        for addr, lbl, _ in wallets:
+            lbl_str = f"  <b>{lbl}</b>" if lbl else ""
+            lines.append(f"\n• <code>{addr}</code>{lbl_str}")
+            btn_label = f"🗑 {lbl}" if lbl else f"🗑 {addr[:8]}..."
+            buttons.append([InlineKeyboardButton(
+                text=btn_label,
+                callback_data=f"remove:{addr}"
+            )])
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        await callback.message.edit_text("\n".join(lines), reply_markup=keyboard)
+
+
+@dp.message(Command("check"))
+async def cmd_check(message: types.Message):
+    if not is_allowed(message):
+        return
+
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Використання: /check <code>0xАДРЕСА</code>")
+        return
+
+    address = parts[1].strip().lower()
+    _cancel_live(message.chat.id)
+
+    msg = await message.answer("🔍 Завантажую...")
+    text = await build_live_text(address)
+    await msg.edit_text(text, disable_web_page_preview=True)
+
+    task = asyncio.create_task(
+        live_update_loop(message.chat.id, msg.message_id, address)
+    )
+    _live_tasks[message.chat.id] = task
+
+
+# ─── Fast margin poll ────────────────────────────────────────────────────────
+
+async def margin_poll_loop():
+    import time
+    logger.info(f"Margin poll loop started (interval={MARGIN_POLL_INTERVAL}s)")
+    while True:
+        await asyncio.sleep(MARGIN_POLL_INTERVAL)
+        try:
+            wallets = await storage.get_all_wallets()
+            for address, label, chat_id in wallets:
+                last = _last_checked.get(address, 0)
+                if time.monotonic() - last < 1.5:
+                    continue
+                try:
+                    await check_and_notify(address, label, chat_id)
+                except Exception as e:
+                    logger.error(f"Margin poll error {address[:8]}: {e}")
+                await asyncio.sleep(0.2)
+        except Exception as e:
+            logger.error(f"Margin poll loop error: {e}")
