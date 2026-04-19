@@ -88,18 +88,21 @@ async def build_live_text(address: str) -> str:
         upnl_emoji = "📈" if upnl >= 0 else "📉"
 
         liq_str = ""
-        if p["liquidation_price"] > 0 and cur_px > 0:
-            dist = tracker.liq_distance_pct(p, cur_px)
-            if dist is not None:
-                danger = " ‼️" if dist < tracker.LIQ_DANGER_PCT else ""
-                liq_str = f"  Liq: {dist:.1f}%{danger}"
+        if p["liquidation_price"] > 0:
+            liq_px = p["liquidation_price"]
+            if cur_px > 0:
+                dist = tracker.liq_distance_pct(p, cur_px)
+                danger = " ‼️" if dist is not None and dist < tracker.LIQ_DANGER_PCT else ""
+                liq_str = f"  Liq: ${liq_px:,.4f}{danger}"
+            else:
+                liq_str = f"  Liq: ${liq_px:,.4f}"
 
         cur_str = f"${cur_px:,.4f}" if cur_px else "—"
 
         lines.append(
-            f"{side_emoji} <b>{coin}</b>  {p['side']}  {p['leverage']}x\n"
+            f"{side_emoji} <b>{coin}</b>  {p['side']}  {p['leverage']}x  (${p['position_value']:,.0f})\n"
             f"   Ціна: <b>{cur_str}</b>  |  Entry: ${p['entry_price']:,.4f}{liq_str}\n"
-            f"   uPnL: <b>{upnl_emoji} {upnl_str}</b>  (${p['position_value']:,.0f})\n"
+            f"   uPnL: <b>{upnl_emoji} {upnl_str}</b>\n"
         )
 
     lines.append(f"🕐 <i>Оновлено: {updated}</i>")
