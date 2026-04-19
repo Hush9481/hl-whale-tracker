@@ -184,7 +184,7 @@ def format_change(
 
         lines += [
             f"Сторона: {side_str}  ·  {new_p['leverage']}x",
-            f"Розмір: {abs(new_p['size']):.4f}  (${new_p['position_value']:,.0f})",
+            f"Розмір: <b>${new_p['position_value']:,.0f}</b>",
             "",
             action_str,
             f"   Було: ${old_margin:,.0f}  →  Стало: ${new_margin:,.0f}",
@@ -223,7 +223,7 @@ def format_change(
         margin_type = "cross" if p.get("is_cross") else "isolated"
         lines += [
             f"Сторона: {side_str}  ·  {p['leverage']}x  ({margin_type})",
-            f"Розмір: <b>{abs(p['size']):.4f}</b>  (${p['position_value']:,.0f})",
+            f"Розмір: <b>${p['position_value']:,.0f}</b>",
             f"Entry: ${p['entry_price']:,.4f}",
         ]
         if p["liquidation_price"] > 0:
