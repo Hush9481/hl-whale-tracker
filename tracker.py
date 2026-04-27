@@ -266,6 +266,22 @@ def format_change(
     return "\n".join(lines)
 
 
+def change_usd_amount(change: PositionChange) -> float:
+    if change.change_type in (ChangeType.OPENED, ChangeType.SIDE_FLIP):
+        return change.new_pos.get("position_value", 0)
+    if change.change_type in (ChangeType.CLOSED, ChangeType.LIQUIDATED):
+        return change.old_pos.get("position_value", 0)
+    if change.change_type in (ChangeType.INCREASED, ChangeType.DECREASED):
+        return abs(change.new_pos.get("position_value", 0) - change.old_pos.get("position_value", 0))
+    if change.change_type in (ChangeType.MARGIN_REMOVED, ChangeType.MARGIN_ADDED):
+        return abs(change.new_pos.get("margin_used", 0) - change.old_pos.get("margin_used", 0))
+    return 0.0
+
+
+def order_change_usd_amount(change: OrderChange) -> float:
+    return change.order.get("size", 0) * change.order.get("limit_price", 0)
+
+
 def diff_orders(old: dict, new: list) -> list[OrderChange]:
     """
     old: {oid: order_dict} з БД

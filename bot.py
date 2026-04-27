@@ -171,6 +171,7 @@ async def check_and_notify(address: str, label: str, chat_id: int, thread_id: in
 
         push_enabled = await storage.get_wallet_pushover(address)
         push_keys = await storage.get_all_pushover_keys() if push_enabled else []
+        push_min = await storage.get_wallet_pushover_min(address) if push_keys else 0.0
         for change in changes:
             price = current_prices.get(change.coin)
             text = tracker.format_change(change, label, address, current_price=price)
@@ -180,7 +181,7 @@ async def check_and_notify(address: str, label: str, chat_id: int, thread_id: in
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
             )
-            if push_keys:
+            if push_keys and tracker.change_usd_amount(change) >= push_min:
                 title = f"🐋 {change.coin} {change.change_type.value}"
                 await pushover.send(PUSHOVER_APP_TOKEN, push_keys, title, text)
 
@@ -242,7 +243,9 @@ async def cmd_start(message: types.Message):
         "/lists — список з кнопками видалення\n"
         "/check <code>0xАДРЕСА</code> — live ціна + PnL\n"
         "/pushover <code>0xАДРЕСА</code> — увімк/вимк Pushover для гаманця\n"
+        "/pushfilter <code>0xАДРЕСА</code> <code>СУМА</code> — мінімум $ для пушу\n"
         "/setpushover <code>USER_KEY</code> — підключити свій Pushover\n"
+        "/mypushover — перевірити статус підключення\n"
         "/delpushover — відключити свій Pushover\n"
         "/setthread — надсилати всі алерти в цю гілку\n"
         "/myid — показати ID цього чату\n\n"
@@ -453,9 +456,70 @@ async def cmd_setpushover(message: types.Message):
 
 @dp.message(Command("delpushover"))
 async def cmd_delpushover(message: types.Message):
-
     await storage.delete_pushover_user(message.from_user.id)
     await message.answer("🔕 Pushover відключено")
+
+
+@dp.message(Command("mypushover"))
+async def cmd_mypushover(message: types.Message):
+    import aiosqlite
+    from config import DB_PATH
+    user_id = message.from_user.id
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT user_key FROM pushover_users WHERE user_id = ?", (user_id,)
+        ) as cur:
+            row = await cur.fetchone()
+    all_keys = await storage.get_all_pushover_keys()
+    if row:
+        await message.answer(
+            f"✅ Pushover підключено\n"
+            f"Всього зареєстровано: {len(all_keys)} користувач(ів)"
+        )
+    else:
+        await message.answer(
+            "❌ Ти не підключений до Pushover\n"
+            "Введи: /setpushover <code>USER_KEY</code>"
+        )
+
+
+@dp.message(Command("pushfilter"))
+async def cmd_pushfilter(message: types.Message):
+    if not is_allowed(message):
+        return
+
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await message.answer(
+            "Використання: /pushfilter <code>0xАДРЕСА</code> <code>СУМА</code>\n"
+            "Приклад: /pushfilter 0x1234...abcd 20000\n"
+            "Встановити 0 — без фільтру"
+        )
+        return
+
+    address = parts[1].strip().lower()
+    wallet = await storage.get_wallet(address)
+    if not wallet:
+        await message.answer("❌ Гаманець не знайдений в списку відстеження")
+        return
+
+    try:
+        min_usd = float(parts[2].strip().replace(",", ""))
+    except ValueError:
+        await message.answer("❌ Невалідна сума")
+        return
+
+    await storage.set_wallet_pushover_min(address, min_usd)
+    label = wallet[1]
+    label_str = f" <b>{label}</b>" if label else ""
+    if min_usd > 0:
+        await message.answer(
+            f"✅ Фільтр Pushover{label_str}\n"
+            f"<code>{address}</code>\n"
+            f"Пуш тільки при зміні ≥ <b>${min_usd:,.0f}</b>"
+        )
+    else:
+        await message.answer(f"✅ Фільтр знятий{label_str} — пуш при будь-якій зміні")
 
 
 @dp.message(Command("testpushover"))
@@ -539,6 +603,7 @@ async def check_orders_and_notify(address: str, label: str, chat_id: int, thread
     changes = tracker.diff_orders(old_orders, new_orders)
     push_enabled = await storage.get_wallet_pushover(address) if changes else False
     push_keys = await storage.get_all_pushover_keys() if push_enabled else []
+    push_min = await storage.get_wallet_pushover_min(address) if push_keys else 0.0
 
     for change in changes:
         price = current_prices.get(change.coin)
@@ -549,7 +614,7 @@ async def check_orders_and_notify(address: str, label: str, chat_id: int, thread
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
         )
-        if push_keys:
+        if push_keys and tracker.order_change_usd_amount(change) >= push_min:
             title = f"🐋 {change.coin} {change.change_type.value}"
             await pushover.send(PUSHOVER_APP_TOKEN, push_keys, title, text)
 

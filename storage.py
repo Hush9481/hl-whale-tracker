@@ -22,6 +22,10 @@ async def init_db():
             await db.execute("ALTER TABLE watched_wallets ADD COLUMN pushover_enabled INTEGER DEFAULT 0")
         except Exception:
             pass
+        try:
+            await db.execute("ALTER TABLE watched_wallets ADD COLUMN pushover_min_usd REAL DEFAULT 0")
+        except Exception:
+            pass
         await db.execute("""
             CREATE TABLE IF NOT EXISTS position_snapshots (
                 address     TEXT NOT NULL,
@@ -146,6 +150,25 @@ async def get_wallet_pushover(address: str) -> bool:
         ) as cursor:
             row = await cursor.fetchone()
             return bool(row[0]) if row else False
+
+
+async def get_wallet_pushover_min(address: str) -> float:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT pushover_min_usd FROM watched_wallets WHERE address = ?",
+            (address.lower(),)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return float(row[0]) if row and row[0] else 0.0
+
+
+async def set_wallet_pushover_min(address: str, min_usd: float):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE watched_wallets SET pushover_min_usd = ? WHERE address = ?",
+            (min_usd, address.lower())
+        )
+        await db.commit()
 
 
 async def set_wallet_pushover(address: str, enabled: bool):
