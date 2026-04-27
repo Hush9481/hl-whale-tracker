@@ -429,8 +429,6 @@ async def cmd_setthread(message: types.Message):
 
 @dp.message(Command("setpushover"))
 async def cmd_setpushover(message: types.Message):
-    if not is_allowed(message):
-        return
 
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
@@ -455,8 +453,6 @@ async def cmd_setpushover(message: types.Message):
 
 @dp.message(Command("delpushover"))
 async def cmd_delpushover(message: types.Message):
-    if not is_allowed(message):
-        return
 
     await storage.delete_pushover_user(message.from_user.id)
     await message.answer("🔕 Pushover відключено")
@@ -464,8 +460,6 @@ async def cmd_delpushover(message: types.Message):
 
 @dp.message(Command("testpushover"))
 async def cmd_testpushover(message: types.Message):
-    if not is_allowed(message):
-        return
 
     keys = await storage.get_all_pushover_keys()
     if not keys:
