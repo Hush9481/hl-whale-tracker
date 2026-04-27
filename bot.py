@@ -462,6 +462,24 @@ async def cmd_delpushover(message: types.Message):
     await message.answer("🔕 Pushover відключено")
 
 
+@dp.message(Command("testpushover"))
+async def cmd_testpushover(message: types.Message):
+    if not is_allowed(message):
+        return
+
+    keys = await storage.get_all_pushover_keys()
+    if not keys:
+        await message.answer("❌ Немає зареєстрованих Pushover користувачів")
+        return
+
+    await pushover.send(
+        PUSHOVER_APP_TOKEN, keys,
+        "🐋 HL Whale Tracker",
+        "Тестове сповіщення — підключення працює!"
+    )
+    await message.answer(f"✅ Тест відправлено на {len(keys)} пристрій(и)")
+
+
 @dp.message(Command("pushover"))
 async def cmd_pushover(message: types.Message):
     if not is_allowed(message):
