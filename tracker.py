@@ -312,26 +312,12 @@ def format_order_change(
 
     lines = [
         f"{emoji} <b>{change.change_type.value}</b>  ·  {display}",
-        f"Токен: <b>{change.coin}</b>",
-        f"Напрямок: {side_emoji} <b>{side_str}</b>",
-        f"Ціна ліміту: <b>${lim_px:,.4f}</b>",
-        f"Розмір: ~<b>${usd_val:,.0f}</b>  ({size:g} {change.coin})",
+        f"{side_emoji} <b>{side_str}</b>  {change.coin}  <b>${lim_px:,.4f}</b>",
+        f"~<b>${usd_val:,.0f}</b>  ({size:g} {change.coin})",
     ]
 
-    if current_price and current_price > 0:
-        diff_abs = lim_px - current_price
-        diff_pct = diff_abs / current_price * 100
-        sign = "+" if diff_abs >= 0 else ""
-        diff_usd_per_unit = abs(diff_abs)
-        direction = "вище ринку ↑" if diff_abs >= 0 else "нижче ринку ↓"
-        lines += [
-            "",
-            f"📏 Від ринку: <b>{sign}${diff_abs:,.4f}</b>  ({sign}{diff_pct:.2f}%)  {direction}",
-            f"   Поточна ціна: ${current_price:,.4f}",
-        ]
-
     if not is_placed:
-        lines.append("\n<i>Ордер зник — скасований або виконаний</i>")
+        lines.append("<i>Ордер зник — скасований або виконаний</i>")
 
     lines.append(
         f"\n🔗 <a href='https://app.hyperliquid.xyz/trade/{change.coin}'>Hyperliquid chart</a>"
