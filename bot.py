@@ -601,9 +601,6 @@ async def check_orders_and_notify(address: str, label: str, chat_id: int, thread
     current_prices = await hyperliquid.get_all_mids()
 
     changes = tracker.diff_orders(old_orders, new_orders)
-    push_enabled = await storage.get_wallet_pushover(address) if changes else False
-    push_keys = await storage.get_all_pushover_keys() if push_enabled else []
-    push_min = await storage.get_wallet_pushover_min(address) if push_keys else 0.0
 
     for change in changes:
         price = current_prices.get(change.coin)
@@ -614,9 +611,6 @@ async def check_orders_and_notify(address: str, label: str, chat_id: int, thread
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
         )
-        if push_keys and tracker.order_change_usd_amount(change) >= push_min:
-            title = f"🐋 {change.coin} {change.change_type.value}"
-            await pushover.send(PUSHOVER_APP_TOKEN, push_keys, title, text)
 
     new_oids = {o["oid"] for o in new_orders}
     old_oids = set(old_orders.keys())
