@@ -1,7 +1,6 @@
 import re
 import aiohttp
 import logging
-from config import PUSHOVER_APP_TOKEN, PUSHOVER_USER_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -14,18 +13,20 @@ def _strip_html(text: str) -> str:
     return text.strip()
 
 
-async def send(title: str, message: str):
-    if not PUSHOVER_APP_TOKEN or not PUSHOVER_USER_KEY:
+async def send(app_token: str, user_keys: list, title: str, message: str):
+    if not app_token or not user_keys:
         return
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(PUSHOVER_URL, data={
-                "token": PUSHOVER_APP_TOKEN,
-                "user": PUSHOVER_USER_KEY,
-                "title": title,
-                "message": _strip_html(message),
-            }) as resp:
-                if resp.status != 200:
-                    logger.warning(f"Pushover response {resp.status}")
-    except Exception as e:
-        logger.error(f"Pushover error: {e}")
+    clean = _strip_html(message)
+    async with aiohttp.ClientSession() as session:
+        for key in user_keys:
+            try:
+                async with session.post(PUSHOVER_URL, data={
+                    "token": app_token,
+                    "user": key,
+                    "title": title,
+                    "message": clean,
+                }) as resp:
+                    if resp.status != 200:
+                        logger.warning(f"Pushover {resp.status} for user {key[:6]}...")
+            except Exception as e:
+                logger.error(f"Pushover error: {e}")

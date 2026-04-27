@@ -12,7 +12,7 @@ import storage
 import hyperliquid
 import tracker
 import pushover
-from config import TELEGRAM_BOT_TOKEN, POLL_INTERVAL, ALLOWED_CHATS
+from config import TELEGRAM_BOT_TOKEN, POLL_INTERVAL, ALLOWED_CHATS, PUSHOVER_APP_TOKEN
 from ws_manager import HLWebSocket
 
 logger = logging.getLogger(__name__)
@@ -170,6 +170,7 @@ async def check_and_notify(address: str, label: str, chat_id: int, thread_id: in
         changes = tracker.diff_positions(old_positions, new_positions)
 
         push_enabled = await storage.get_wallet_pushover(address)
+        push_keys = await storage.get_all_pushover_keys() if push_enabled else []
         for change in changes:
             price = current_prices.get(change.coin)
             text = tracker.format_change(change, label, address, current_price=price)
@@ -179,9 +180,9 @@ async def check_and_notify(address: str, label: str, chat_id: int, thread_id: in
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
             )
-            if push_enabled:
+            if push_keys:
                 title = f"🐋 {change.coin} {change.change_type.value}"
-                await pushover.send(title, text)
+                await pushover.send(PUSHOVER_APP_TOKEN, push_keys, title, text)
 
         for coin in list(old_positions):
             if coin not in new_positions:
@@ -241,6 +242,8 @@ async def cmd_start(message: types.Message):
         "/lists — список з кнопками видалення\n"
         "/check <code>0xАДРЕСА</code> — live ціна + PnL\n"
         "/pushover <code>0xАДРЕСА</code> — увімк/вимк Pushover для гаманця\n"
+        "/setpushover <code>USER_KEY</code> — підключити свій Pushover\n"
+        "/delpushover — відключити свій Pushover\n"
         "/setthread — надсилати всі алерти в цю гілку\n"
         "/myid — показати ID цього чату\n\n"
         "Зміни позицій приходять окремим повідомленням."
@@ -424,6 +427,41 @@ async def cmd_setthread(message: types.Message):
     )
 
 
+@dp.message(Command("setpushover"))
+async def cmd_setpushover(message: types.Message):
+    if not is_allowed(message):
+        return
+
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer(
+            "Використання: /setpushover <code>USER_KEY</code>\n\n"
+            "User Key знаходиться на головній сторінці pushover.net після логіну."
+        )
+        return
+
+    user_key = parts[1].strip()
+    user_id = message.from_user.id
+    await storage.set_pushover_user(user_id, user_key)
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    await message.answer(
+        f"✅ Pushover підключено\n"
+        f"Тепер ти будеш отримувати пуш-сповіщення для всіх гаманців з увімкненим Pushover."
+    )
+
+
+@dp.message(Command("delpushover"))
+async def cmd_delpushover(message: types.Message):
+    if not is_allowed(message):
+        return
+
+    await storage.delete_pushover_user(message.from_user.id)
+    await message.answer("🔕 Pushover відключено")
+
+
 @dp.message(Command("pushover"))
 async def cmd_pushover(message: types.Message):
     if not is_allowed(message):
@@ -484,6 +522,7 @@ async def check_orders_and_notify(address: str, label: str, chat_id: int, thread
 
     changes = tracker.diff_orders(old_orders, new_orders)
     push_enabled = await storage.get_wallet_pushover(address) if changes else False
+    push_keys = await storage.get_all_pushover_keys() if push_enabled else []
 
     for change in changes:
         price = current_prices.get(change.coin)
@@ -494,9 +533,9 @@ async def check_orders_and_notify(address: str, label: str, chat_id: int, thread
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
         )
-        if push_enabled:
+        if push_keys:
             title = f"🐋 {change.coin} {change.change_type.value}"
-            await pushover.send(title, text)
+            await pushover.send(PUSHOVER_APP_TOKEN, push_keys, title, text)
 
     new_oids = {o["oid"] for o in new_orders}
     old_oids = set(old_orders.keys())

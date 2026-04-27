@@ -32,6 +32,12 @@ async def init_db():
             )
         """)
         await db.execute("""
+            CREATE TABLE IF NOT EXISTS pushover_users (
+                user_id     INTEGER PRIMARY KEY,
+                user_key    TEXT NOT NULL
+            )
+        """)
+        await db.execute("""
             CREATE TABLE IF NOT EXISTS order_snapshots (
                 address     TEXT NOT NULL,
                 oid         INTEGER NOT NULL,
@@ -104,6 +110,28 @@ async def get_snapshots(address: str) -> dict:
         ) as cursor:
             rows = await cursor.fetchall()
             return {row[0]: json.loads(row[1]) for row in rows}
+
+
+async def set_pushover_user(user_id: int, user_key: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO pushover_users (user_id, user_key) VALUES (?, ?)",
+            (user_id, user_key)
+        )
+        await db.commit()
+
+
+async def delete_pushover_user(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM pushover_users WHERE user_id = ?", (user_id,))
+        await db.commit()
+
+
+async def get_all_pushover_keys() -> list:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT user_key FROM pushover_users") as cursor:
+            rows = await cursor.fetchall()
+            return [row[0] for row in rows]
 
 
 async def get_wallet_pushover(address: str) -> bool:
