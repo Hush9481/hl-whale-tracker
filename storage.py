@@ -28,6 +28,15 @@ async def init_db():
                 PRIMARY KEY (address, coin)
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS order_snapshots (
+                address     TEXT NOT NULL,
+                oid         INTEGER NOT NULL,
+                snapshot    TEXT NOT NULL,
+                updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (address, oid)
+            )
+        """)
         await db.commit()
 
 
@@ -44,6 +53,7 @@ async def remove_wallet(address: str):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM watched_wallets WHERE address = ?", (address.lower(),))
         await db.execute("DELETE FROM position_snapshots WHERE address = ?", (address.lower(),))
+        await db.execute("DELETE FROM order_snapshots WHERE address = ?", (address.lower(),))
         await db.commit()
 
 
@@ -91,3 +101,32 @@ async def get_snapshots(address: str) -> dict:
         ) as cursor:
             rows = await cursor.fetchall()
             return {row[0]: json.loads(row[1]) for row in rows}
+
+
+async def get_order_snapshots(address: str) -> dict:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT oid, snapshot FROM order_snapshots WHERE address = ?",
+            (address.lower(),)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return {row[0]: json.loads(row[1]) for row in rows}
+
+
+async def save_order_snapshot(address: str, oid: int, snapshot: dict):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT OR REPLACE INTO order_snapshots (address, oid, snapshot, updated_at)
+               VALUES (?, ?, ?, CURRENT_TIMESTAMP)""",
+            (address.lower(), oid, json.dumps(snapshot))
+        )
+        await db.commit()
+
+
+async def delete_order_snapshot(address: str, oid: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "DELETE FROM order_snapshots WHERE address = ? AND oid = ?",
+            (address.lower(), oid)
+        )
+        await db.commit()

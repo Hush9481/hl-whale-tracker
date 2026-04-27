@@ -10,14 +10,23 @@ LIQ_DANGER_PCT = 15.0
 
 
 class ChangeType(Enum):
-    OPENED         = "ВІДКРИТО"
-    CLOSED         = "ЗАКРИТО"
-    LIQUIDATED     = "ЛІКВІДОВАНО"
-    INCREASED      = "ЗБІЛЬШЕНО"
-    DECREASED      = "ЗМЕНШЕНО"
-    SIDE_FLIP      = "ФЛІП СТОРОНИ"
-    MARGIN_REMOVED = "ВИВІД МАРЖІ ⚠️"
-    MARGIN_ADDED   = "ДОДАНО МАРЖУ"
+    OPENED          = "ВІДКРИТО"
+    CLOSED          = "ЗАКРИТО"
+    LIQUIDATED      = "ЛІКВІДОВАНО"
+    INCREASED       = "ЗБІЛЬШЕНО"
+    DECREASED       = "ЗМЕНШЕНО"
+    SIDE_FLIP       = "ФЛІП СТОРОНИ"
+    MARGIN_REMOVED  = "ВИВІД МАРЖІ ⚠️"
+    MARGIN_ADDED    = "ДОДАНО МАРЖУ"
+    ORDER_PLACED    = "ВИСТАВЛЕНО ОРДЕР"
+    ORDER_CANCELLED = "СКАСОВАНО ОРДЕР"
+
+
+@dataclass
+class OrderChange:
+    change_type: ChangeType
+    coin: str
+    order: dict
 
 
 @dataclass
@@ -253,6 +262,76 @@ def format_change(
         ]
         if change.change_type == ChangeType.LIQUIDATED:
             lines.append("⚠️ <i>Ймовірна примусова ліквідація</i>")
+
+    lines.append(
+        f"\n🔗 <a href='https://app.hyperliquid.xyz/trade/{change.coin}'>Hyperliquid chart</a>"
+        f"  ·  <a href='https://hypurrscan.io/address/{address}'>Hypurrscan</a>"
+    )
+    return "\n".join(lines)
+
+
+def diff_orders(old: dict, new: list) -> list[OrderChange]:
+    """
+    old: {oid: order_dict} з БД
+    new: список ордерів з API
+    """
+    changes = []
+    new_by_oid = {o["oid"]: o for o in new}
+
+    for oid, order in new_by_oid.items():
+        if oid not in old:
+            changes.append(OrderChange(ChangeType.ORDER_PLACED, order["coin"], order))
+
+    for oid, order in old.items():
+        if oid not in new_by_oid:
+            changes.append(OrderChange(ChangeType.ORDER_CANCELLED, order["coin"], order))
+
+    return changes
+
+
+def format_order_change(
+    change: OrderChange,
+    wallet_label: str,
+    address: str,
+    current_price: Optional[float] = None,
+) -> str:
+    is_placed = change.change_type == ChangeType.ORDER_PLACED
+    emoji = "📋" if is_placed else "❌"
+    short_addr = f"{address[:6]}...{address[-4:]}"
+    display = (
+        f"{wallet_label}  <code>{short_addr}</code>"
+        if wallet_label else f"<code>{short_addr}</code>"
+    )
+
+    o = change.order
+    side_emoji = "🟢" if o["side"] == "BUY" else "🔴"
+    side_str = "BUY LIMIT" if o["side"] == "BUY" else "SELL LIMIT"
+    lim_px = o["limit_price"]
+    size = o["size"]
+    usd_val = size * lim_px
+
+    lines = [
+        f"{emoji} <b>{change.change_type.value}</b>  ·  {display}",
+        f"Токен: <b>{change.coin}</b>",
+        f"Напрямок: {side_emoji} <b>{side_str}</b>",
+        f"Ціна ліміту: <b>${lim_px:,.4f}</b>",
+        f"Розмір: ~<b>${usd_val:,.0f}</b>  ({size:g} {change.coin})",
+    ]
+
+    if current_price and current_price > 0:
+        diff_abs = lim_px - current_price
+        diff_pct = diff_abs / current_price * 100
+        sign = "+" if diff_abs >= 0 else ""
+        diff_usd_per_unit = abs(diff_abs)
+        direction = "вище ринку ↑" if diff_abs >= 0 else "нижче ринку ↓"
+        lines += [
+            "",
+            f"📏 Від ринку: <b>{sign}${diff_abs:,.4f}</b>  ({sign}{diff_pct:.2f}%)  {direction}",
+            f"   Поточна ціна: ${current_price:,.4f}",
+        ]
+
+    if not is_placed:
+        lines.append("\n<i>Ордер зник — скасований або виконаний</i>")
 
     lines.append(
         f"\n🔗 <a href='https://app.hyperliquid.xyz/trade/{change.coin}'>Hyperliquid chart</a>"

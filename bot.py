@@ -29,6 +29,7 @@ _last_checked: dict[str, float] = {}
 LIVE_UPDATE_INTERVAL = 5
 LIVE_TIMEOUT = 300
 MARGIN_POLL_INTERVAL = 2
+ORDER_POLL_INTERVAL = 3
 
 
 # ─── Перевірка доступу ───────────────────────────────────────────────────────
@@ -438,6 +439,49 @@ async def cmd_check(message: types.Message):
         live_update_loop(message.chat.id, msg.message_id, address)
     )
     _live_tasks[message.chat.id] = task
+
+
+# ─── Order tracking ─────────────────────────────────────────────────────────
+
+async def check_orders_and_notify(address: str, label: str, chat_id: int, thread_id: int = None):
+    new_orders = await hyperliquid.get_open_orders(address)
+    old_orders = await storage.get_order_snapshots(address)
+    current_prices = await hyperliquid.get_all_mids()
+
+    changes = tracker.diff_orders(old_orders, new_orders)
+
+    for change in changes:
+        price = current_prices.get(change.coin)
+        text = tracker.format_order_change(change, label, address, current_price=price)
+        await bot.send_message(
+            chat_id, text,
+            message_thread_id=thread_id,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+
+    new_oids = {o["oid"] for o in new_orders}
+    old_oids = set(old_orders.keys())
+    for o in new_orders:
+        await storage.save_order_snapshot(address, o["oid"], o)
+    for oid in old_oids - new_oids:
+        await storage.delete_order_snapshot(address, oid)
+
+
+async def order_poll_loop():
+    logger.info(f"Order poll loop started (interval={ORDER_POLL_INTERVAL}s)")
+    while True:
+        await asyncio.sleep(ORDER_POLL_INTERVAL)
+        try:
+            wallets = await storage.get_all_wallets()
+            for address, label, chat_id, thread_id in wallets:
+                try:
+                    await check_orders_and_notify(address, label, chat_id, thread_id)
+                except Exception as e:
+                    logger.error(f"Order poll error {address[:8]}: {e}")
+                await asyncio.sleep(0.2)
+        except Exception as e:
+            logger.error(f"Order poll loop error: {e}")
 
 
 # ─── Fast margin poll ────────────────────────────────────────────────────────

@@ -3,7 +3,7 @@ import logging
 
 import storage
 import bot as bot_module
-from bot import bot, dp, margin_poll_loop, on_ws_event
+from bot import bot, dp, margin_poll_loop, order_poll_loop, on_ws_event
 from ws_manager import HLWebSocket
 
 logging.basicConfig(
@@ -25,12 +25,12 @@ async def main():
 
     # Підписуємось на всі збережені гаманці
     wallets = await storage.get_all_wallets()
-    for address, label, _ in wallets:
+    for address, label, _, __ in wallets:
         await ws.subscribe(address)
         logger.info(f"Subscribed to {address[:8]}... ({label or 'no label'})")
 
-    # Slow poll для змін маржі
     asyncio.create_task(margin_poll_loop())
+    asyncio.create_task(order_poll_loop())
 
     logger.info("Starting Telegram bot...")
     await dp.start_polling(bot, allowed_updates=["message", "callback_query"])

@@ -55,6 +55,35 @@ async def get_user_state(address: str, retries: int = 3) -> Optional[dict]:
     return None
 
 
+async def get_open_orders(address: str) -> list:
+    """Повертає список відкритих лімітних ордерів"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                HL_API_URL,
+                json={"type": "openOrders", "user": address},
+                timeout=aiohttp.ClientTimeout(total=8)
+            ) as resp:
+                if resp.status == 200:
+                    raw = await resp.json()
+                    return [
+                        {
+                            "oid": item["oid"],
+                            "coin": item["coin"],
+                            "side": "BUY" if item["side"] == "B" else "SELL",
+                            "limit_price": float(item["limitPx"]),
+                            "size": float(item["sz"]),
+                            "orig_size": float(item["origSz"]),
+                            "timestamp": item.get("timestamp", 0),
+                        }
+                        for item in raw
+                        if float(item.get("sz", 0)) > 0
+                    ]
+    except Exception as e:
+        logger.error(f"Error fetching openOrders for {address}: {e}")
+    return []
+
+
 async def get_account_value(address: str) -> Optional[float]:
     """Повертає загальну вартість акаунту в $"""
     state = await get_user_state(address)
