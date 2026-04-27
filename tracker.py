@@ -169,7 +169,7 @@ def format_change(
 
     lines = [
         f"{emoji} <b>{change.change_type.value}</b>  ·  {display}",
-        f"Токен: <b>{change.coin}</b>",
+        f"<b>{change.coin}</b>",
     ]
 
     # ── ВИВІД / ДОДАВАННЯ МАРЖІ ─────────────────────────────────────────────
@@ -183,8 +183,8 @@ def format_change(
         new_margin = new_p["margin_used"]
         delta = abs(new_margin - old_margin)
         delta_pct = delta / old_margin * 100
-        action_str = f"💸 Виведено: <b>${delta:,.0f}</b>  ({delta_pct:.1f}%)" if is_removed \
-                else f"💰 Додано: <b>${delta:,.0f}</b>  ({delta_pct:.1f}%)"
+        action_str = f"💸 <b>${delta:,.0f}</b>  ({delta_pct:.1f}%)" if is_removed \
+                else f"💰 <b>${delta:,.0f}</b>  ({delta_pct:.1f}%)"
 
         old_liq = old_p["liquidation_price"]
         new_liq = new_p["liquidation_price"]
@@ -192,20 +192,19 @@ def format_change(
         liq_shift_pct = liq_shift / old_liq * 100 if old_liq else 0
 
         lines += [
-            f"Сторона: {side_str}  ·  {new_p['leverage']}x",
-            f"Розмір: <b>${new_p['position_value']:,.0f}</b>",
+            f"{side_str}  ·  {new_p['leverage']}x",
+            f"<b>${new_p['position_value']:,.0f}</b>",
             "",
             action_str,
-            f"   Було: ${old_margin:,.0f}  →  Стало: ${new_margin:,.0f}",
+            f"   ${old_margin:,.0f}  →  ${new_margin:,.0f}",
         ]
 
         if old_liq > 0 and new_liq > 0:
             direction = "наблизилась ↑" if is_removed else "відсунулась ↓"
             lines += [
                 "",
-                f"📍 Ліквідаційна ціна ({direction}):",
-                f"   Була:  ${old_liq:,.4f}",
-                f"   Стала: <b>${new_liq:,.4f}</b>  (зсув {liq_shift_pct:.2f}%)",
+                f"📍 {direction}",
+                f"   ${old_liq:,.4f}  →  <b>${new_liq:,.4f}</b>  ({liq_shift_pct:.2f}%)",
             ]
 
         if current_price and current_price > 0:
@@ -215,10 +214,7 @@ def format_change(
                 danger = " ‼️" if (is_removed and dist_new < LIQ_DANGER_PCT) else ""
                 lines += [
                     "",
-                    f"📏 Дистанція до ліквідації:",
-                    f"   Була:  {dist_old:.2f}%",
-                    f"   Стала: <b>{dist_new:.2f}%{danger}</b>",
-                    f"   Поточна ціна: ${current_price:,.4f}",
+                    f"📏 {dist_old:.2f}%  →  <b>{dist_new:.2f}%{danger}</b>  (${current_price:,.4f})",
                 ]
 
         footer = "⚠️ <i>Кит зменшив маржу — ліквідаційна ціна наблизилась</i>" if is_removed \
@@ -231,12 +227,12 @@ def format_change(
         side_str = "🟢 LONG" if p["side"] == "LONG" else "🔴 SHORT"
         margin_type = "cross" if p.get("is_cross") else "isolated"
         lines += [
-            f"Сторона: {side_str}  ·  {p['leverage']}x  ({margin_type})",
-            f"Розмір: <b>${p['position_value']:,.0f}</b>",
-            f"Entry: ${p['entry_price']:,.4f}",
+            f"{side_str}  ·  {p['leverage']}x  ({margin_type})",
+            f"<b>${p['position_value']:,.0f}</b>",
+            f"${p['entry_price']:,.4f}",
         ]
         if p["liquidation_price"] > 0:
-            liq_line = f"Ліквідація: ${p['liquidation_price']:,.4f}"
+            liq_line = f"${p['liquidation_price']:,.4f}"
             if current_price:
                 dist = liq_distance_pct(p, current_price)
                 if dist is not None:
@@ -244,21 +240,21 @@ def format_change(
                     liq_line += f"  ({dist:.2f}%{danger})"
             lines.append(liq_line)
         else:
-            lines.append("Ліквідація: <i>cross margin — рахується по акаунту</i>")
-        lines.append(f"uPnL: <b>${p['unrealized_pnl']:+,.2f}</b>")
+            lines.append("<i>cross margin</i>")
+        lines.append(f"<b>${p['unrealized_pnl']:+,.2f}</b>")
         if change.old_pos:
             size_diff = abs(p["size"]) - abs(change.old_pos["size"])
             val_diff = p["position_value"] - change.old_pos["position_value"]
             sign = "+" if size_diff > 0 else ""
-            lines.append(f"Зміна: {sign}{size_diff:.4f}  (${val_diff:+,.0f})")
+            lines.append(f"{sign}{size_diff:.4f}  (${val_diff:+,.0f})")
 
     elif change.old_pos:
         p = change.old_pos
         side_str = "🟢 LONG" if p["side"] == "LONG" else "🔴 SHORT"
         lines += [
-            f"Була: {side_str}  {abs(p['size']):.4f}  @ ${p['entry_price']:,.4f}",
-            f"uPnL на момент закриття: <b>${p['unrealized_pnl']:+,.2f}</b>",
-            f"Розмір позиції: ${p['position_value']:,.0f}",
+            f"{side_str}  {abs(p['size']):.4f}  @  ${p['entry_price']:,.4f}",
+            f"<b>${p['unrealized_pnl']:+,.2f}</b>",
+            f"${p['position_value']:,.0f}",
         ]
         if change.change_type == ChangeType.LIQUIDATED:
             lines.append("⚠️ <i>Ймовірна примусова ліквідація</i>")
