@@ -13,6 +13,9 @@ DB_PATH = os.path.join(_data_dir, "tracker.db") if _data_dir else os.getenv("DB_
 
 HL_API_URL = "https://api.hyperliquid.xyz/info"
 
+PUSHOVER_APP_TOKEN = os.getenv("PUSHOVER_APP_TOKEN", "")
+PUSHOVER_USER_KEY  = os.getenv("PUSHOVER_USER_KEY", "")
+
 SIZE_CHANGE_THRESHOLD = 0.02  # 2%
 
 def _parse_allowed_chats() -> set:

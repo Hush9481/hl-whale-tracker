@@ -14,11 +14,14 @@ async def init_db():
                 added_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # Міграція: додаємо thread_id якщо таблиця вже існує без нього
         try:
             await db.execute("ALTER TABLE watched_wallets ADD COLUMN thread_id INTEGER DEFAULT NULL")
         except Exception:
-            pass  # колонка вже є
+            pass
+        try:
+            await db.execute("ALTER TABLE watched_wallets ADD COLUMN pushover_enabled INTEGER DEFAULT 0")
+        except Exception:
+            pass
         await db.execute("""
             CREATE TABLE IF NOT EXISTS position_snapshots (
                 address     TEXT NOT NULL,
@@ -101,6 +104,25 @@ async def get_snapshots(address: str) -> dict:
         ) as cursor:
             rows = await cursor.fetchall()
             return {row[0]: json.loads(row[1]) for row in rows}
+
+
+async def get_wallet_pushover(address: str) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT pushover_enabled FROM watched_wallets WHERE address = ?",
+            (address.lower(),)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return bool(row[0]) if row else False
+
+
+async def set_wallet_pushover(address: str, enabled: bool):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE watched_wallets SET pushover_enabled = ? WHERE address = ?",
+            (1 if enabled else 0, address.lower())
+        )
+        await db.commit()
 
 
 async def get_order_snapshots(address: str) -> dict:

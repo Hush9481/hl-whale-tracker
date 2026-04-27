@@ -11,6 +11,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import storage
 import hyperliquid
 import tracker
+import pushover
 from config import TELEGRAM_BOT_TOKEN, POLL_INTERVAL, ALLOWED_CHATS
 from ws_manager import HLWebSocket
 
@@ -168,6 +169,7 @@ async def check_and_notify(address: str, label: str, chat_id: int, thread_id: in
 
         changes = tracker.diff_positions(old_positions, new_positions)
 
+        push_enabled = await storage.get_wallet_pushover(address)
         for change in changes:
             price = current_prices.get(change.coin)
             text = tracker.format_change(change, label, address, current_price=price)
@@ -177,6 +179,9 @@ async def check_and_notify(address: str, label: str, chat_id: int, thread_id: in
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
             )
+            if push_enabled:
+                title = f"🐋 {change.coin} {change.change_type.value}"
+                await pushover.send(title, text)
 
         for coin in list(old_positions):
             if coin not in new_positions:
@@ -235,6 +240,7 @@ async def cmd_start(message: types.Message):
         "/remove <code>0xАДРЕСА</code> — видалити гаманець\n"
         "/lists — список з кнопками видалення\n"
         "/check <code>0xАДРЕСА</code> — live ціна + PnL\n"
+        "/pushover <code>0xАДРЕСА</code> — увімк/вимк Pushover для гаманця\n"
         "/setthread — надсилати всі алерти в цю гілку\n"
         "/myid — показати ID цього чату\n\n"
         "Зміни позицій приходять окремим повідомленням."
@@ -418,6 +424,34 @@ async def cmd_setthread(message: types.Message):
     )
 
 
+@dp.message(Command("pushover"))
+async def cmd_pushover(message: types.Message):
+    if not is_allowed(message):
+        return
+
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Використання: /pushover <code>0xАДРЕСА</code>")
+        return
+
+    address = parts[1].strip().lower()
+    wallet = await storage.get_wallet(address)
+    if not wallet:
+        await message.answer("❌ Гаманець не знайдений в списку відстеження")
+        return
+
+    current = await storage.get_wallet_pushover(address)
+    new_state = not current
+    await storage.set_wallet_pushover(address, new_state)
+
+    label = wallet[1]
+    label_str = f" <b>{label}</b>" if label else ""
+    status = "✅ Pushover увімкнено" if new_state else "🔕 Pushover вимкнено"
+    await message.answer(
+        f"{status}{label_str}\n<code>{address}</code>"
+    )
+
+
 @dp.message(Command("check"))
 async def cmd_check(message: types.Message):
     if not is_allowed(message):
@@ -449,6 +483,7 @@ async def check_orders_and_notify(address: str, label: str, chat_id: int, thread
     current_prices = await hyperliquid.get_all_mids()
 
     changes = tracker.diff_orders(old_orders, new_orders)
+    push_enabled = await storage.get_wallet_pushover(address) if changes else False
 
     for change in changes:
         price = current_prices.get(change.coin)
@@ -459,6 +494,9 @@ async def check_orders_and_notify(address: str, label: str, chat_id: int, thread
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
         )
+        if push_enabled:
+            title = f"🐋 {change.coin} {change.change_type.value}"
+            await pushover.send(title, text)
 
     new_oids = {o["oid"] for o in new_orders}
     old_oids = set(old_orders.keys())
