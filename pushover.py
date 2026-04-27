@@ -25,8 +25,9 @@ async def send(app_token: str, user_keys: list, title: str, message: str):
                     "user": key,
                     "title": title,
                     "message": clean,
-                    "sound": "pushover",
-                    "priority": 1,
+                    "priority": 2,
+                    "retry": 30,
+                    "expire": 180,
                 }) as resp:
                     if resp.status != 200:
                         logger.warning(f"Pushover {resp.status} for user {key[:6]}...")
