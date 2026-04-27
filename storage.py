@@ -113,12 +113,16 @@ async def get_snapshots(address: str) -> dict:
 
 
 async def set_pushover_user(user_id: int, user_key: str):
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"set_pushover_user: user_id={user_id} db={DB_PATH}")
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT OR REPLACE INTO pushover_users (user_id, user_key) VALUES (?, ?)",
             (user_id, user_key)
         )
         await db.commit()
+    logger.info(f"set_pushover_user: committed ok")
 
 
 async def delete_pushover_user(user_id: int):

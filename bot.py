@@ -460,10 +460,14 @@ async def cmd_delpushover(message: types.Message):
 
 @dp.message(Command("testpushover"))
 async def cmd_testpushover(message: types.Message):
-
+    from config import DB_PATH
     keys = await storage.get_all_pushover_keys()
     if not keys:
-        await message.answer("❌ Немає зареєстрованих Pushover користувачів")
+        await message.answer(
+            f"❌ Немає зареєстрованих Pushover користувачів\n"
+            f"<code>DB: {DB_PATH}</code>\n"
+            f"<code>your user_id: {message.from_user.id}</code>"
+        )
         return
 
     await pushover.send(
