@@ -312,7 +312,7 @@ def format_order_change(
 
     lines = [
         f"{emoji} <b>{change.change_type.value}</b>  ·  {display}",
-        f"{side_emoji} <b>{side_str}</b>  {change.coin}  <b>${lim_px:,.4f}</b>",
+        f"{side_emoji} <b>{side_str}</b>  {change.coin}  <b>${lim_px:,.2f}</b>",
         f"~<b>${usd_val:,.0f}</b>  ({size:g} {change.coin})",
     ]
 
