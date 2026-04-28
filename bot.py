@@ -169,10 +169,16 @@ async def check_and_notify(address: str, label: str, chat_id: int, thread_id: in
 
         changes = tracker.diff_positions(old_positions, new_positions)
 
+        enabled_groups = await storage.get_wallet_notify_groups(address)
         push_enabled = await storage.get_wallet_pushover(address)
         push_keys = await storage.get_all_pushover_keys() if push_enabled else []
         push_min = await storage.get_wallet_pushover_min(address) if push_keys else 0.0
+
         for change in changes:
+            if enabled_groups is not None:
+                group = tracker.get_change_type_group(change.change_type)
+                if group not in enabled_groups:
+                    continue
             price = current_prices.get(change.coin)
             text = tracker.format_change(change, label, address, current_price=price)
             await bot.send_message(
@@ -194,12 +200,63 @@ async def check_and_notify(address: str, label: str, chat_id: int, thread_id: in
 
 # ─── WebSocket callback ──────────────────────────────────────────────────────
 
+async def _handle_twap_events(address: str, label: str, chat_id: int, thread_id, history: list):
+    enabled = await storage.get_wallet_notify_groups(address)
+    if enabled is not None and "twaps" not in enabled:
+        return
+
+    prices = await hyperliquid.get_all_mids()
+    status_map = {
+        "activated":  tracker.ChangeType.TWAP_STARTED,
+        "finished":   tracker.ChangeType.TWAP_FINISHED,
+        "terminated": tracker.ChangeType.TWAP_CANCELLED,
+        "error":      tracker.ChangeType.TWAP_ERROR,
+    }
+
+    for item in history:
+        state  = item.get("state", {})
+        status = item.get("status", "")
+        ct = status_map.get(status)
+        if ct is None:
+            continue
+
+        coin        = state.get("coin", "?")
+        is_buy      = state.get("is_buy", True)
+        size        = float(state.get("sz", 0))
+        executed_sz = float(state.get("executedSz", 0))
+        duration_ms = int(state.get("duration", 0))
+        duration_min = max(1, duration_ms // 60000) if duration_ms else 0
+
+        twap_change = tracker.TwapChange(
+            change_type   = ct,
+            coin          = coin,
+            side          = "BUY" if is_buy else "SELL",
+            size          = size,
+            executed_size = executed_sz,
+            twap_id       = state.get("twapId", 0),
+            duration_min  = duration_min,
+        )
+        price = prices.get(coin)
+        text  = tracker.format_twap_change(twap_change, label, address, current_price=price)
+        await bot.send_message(
+            chat_id, text,
+            message_thread_id=thread_id,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+
+
 async def on_ws_event(address: str, event_type: str, data):
     wallet = await storage.get_wallet(address)
     if not wallet:
         return
     _, label, chat_id, thread_id = wallet
     logger.info(f"WS event [{event_type}] for {address[:8]}...")
+
+    if event_type == "twap":
+        await _handle_twap_events(address, label, chat_id, thread_id, data)
+        return
+
     await asyncio.sleep(0.6)
     await check_and_notify(address, label, chat_id, thread_id)
 
@@ -243,6 +300,7 @@ async def cmd_start(message: types.Message):
         "/remove <code>0xАДРЕСА</code> — видалити гаманець\n"
         "/lists — список з кнопками видалення\n"
         "/check <code>0xАДРЕСА</code> — live ціна + PnL\n"
+        "/filter <code>0xАДРЕСА</code> — фільтр типів сповіщень\n"
         "/pushover <code>0xАДРЕСА</code> — увімк/вимк Pushover для гаманця\n"
         "/pushfilter <code>0xАДРЕСА</code> <code>СУМА</code> — мінімум $ для пушу\n"
         "/setpushover <code>USER_KEY</code> — підключити свій Pushover\n"
@@ -267,8 +325,10 @@ async def cmd_guide(message: types.Message):
         "• Трекає всі відкриті позиції та баланс гаманця\n"
         "• Відстежує відкриття / закриття позицій\n"
         "• Відстежує виставлення / скасування лімітних ордерів\n"
+        "• Відстежує запуск / завершення / скасування TWAP ордерів\n"
         "• Сповіщає про додавання / виведення маржі з позиції\n"
-        "• Pushover push-сповіщення з фільтром по сумі\n\n"
+        "• Pushover push-сповіщення з фільтром по сумі\n"
+        "• Гнучкий фільтр типів сповіщень per-wallet\n\n"
 
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "➕ <b>Підключити гаманець</b>\n"
@@ -300,7 +360,18 @@ async def cmd_guide(message: types.Message):
         "🚨 <b>ВИВІД МАРЖІ</b> — кит зменшив заставу (ризик)\n"
         "🛡 <b>ДОДАНО МАРЖУ</b> — кит укріпив позицію\n\n"
         "📋 <b>ВИСТАВЛЕНО ОРДЕР</b> — лімітка виставлена\n"
-        "❌ <b>СКАСОВАНО ОРДЕР</b> — лімітка знята або виконана",
+        "❌ <b>СКАСОВАНО ОРДЕР</b> — лімітка знята або виконана\n\n"
+        "⏱ <b>ТВАП ЗАПУЩЕНО</b> — TWAP ордер активований\n"
+        "✅ <b>ТВАП ЗАВЕРШЕНО</b> — TWAP виконано повністю\n"
+        "🛑 <b>ТВАП СКАСОВАНО</b> — TWAP зупинено вручну\n\n"
+
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "⚙️ <b>Фільтр сповіщень</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "Щоб не отримувати спам від лімітних ордерів:\n"
+        "<code>/filter 0x...123</code>\n"
+        "Відкриється меню з кнопками ✅/❌ для кожного типу:\n"
+        "<i>Позиції · Зміни розміру · Маржа · Ліміт ордери · TWAP</i>",
         disable_web_page_preview=True,
     )
 
@@ -622,6 +693,95 @@ async def cmd_pushover(message: types.Message):
     )
 
 
+@dp.message(Command("filter"))
+async def cmd_filter(message: types.Message):
+    if not is_allowed(message):
+        return
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Використання: /filter <code>0xАДРЕСА</code>")
+        return
+    address = parts[1].strip().lower()
+    wallet = await storage.get_wallet(address)
+    if not wallet:
+        await message.answer("❌ Гаманець не знайдений в списку відстеження")
+        return
+    await _send_filter_menu(message.chat.id, message.message_thread_id, address, wallet[1])
+
+
+async def _send_filter_menu(chat_id: int, thread_id, address: str, label: str):
+    enabled = await storage.get_wallet_notify_groups(address)
+    if enabled is None:
+        enabled = tracker.ALL_GROUPS.copy()
+
+    label_str = f" <b>{label}</b>" if label else ""
+    short = f"{address[:6]}...{address[-4:]}"
+
+    buttons, row = [], []
+    for group, gname in tracker.GROUP_LABELS.items():
+        icon = "✅" if group in enabled else "❌"
+        row.append(InlineKeyboardButton(
+            text=f"{icon} {gname}",
+            callback_data=f"flt:{address}:{group}",
+        ))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+
+    await bot.send_message(
+        chat_id,
+        f"⚙️ <b>Фільтр сповіщень</b>{label_str}\n"
+        f"<code>{short}</code>\n\n"
+        "Натисніть щоб увімк/вимк тип сповіщень:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        message_thread_id=thread_id,
+    )
+
+
+@dp.callback_query(F.data.startswith("flt:"))
+async def cb_filter(callback: types.CallbackQuery):
+    _, address, group = callback.data.split(":", 2)
+
+    enabled = await storage.get_wallet_notify_groups(address)
+    if enabled is None:
+        enabled = tracker.ALL_GROUPS.copy()
+
+    if group in enabled:
+        enabled.discard(group)
+    else:
+        enabled.add(group)
+
+    await storage.set_wallet_notify_groups(address, enabled)
+
+    wallet = await storage.get_wallet(address)
+    label = wallet[1] if wallet else ""
+    label_str = f" <b>{label}</b>" if label else ""
+    short = f"{address[:6]}...{address[-4:]}"
+
+    buttons, row = [], []
+    for g, gname in tracker.GROUP_LABELS.items():
+        icon = "✅" if g in enabled else "❌"
+        row.append(InlineKeyboardButton(
+            text=f"{icon} {gname}",
+            callback_data=f"flt:{address}:{g}",
+        ))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+
+    await callback.message.edit_text(
+        f"⚙️ <b>Фільтр сповіщень</b>{label_str}\n"
+        f"<code>{short}</code>\n\n"
+        "Натисніть щоб увімк/вимк тип сповіщень:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+    )
+    await callback.answer()
+
+
 @dp.message(Command("check"))
 async def cmd_check(message: types.Message):
     if not is_allowed(message):
@@ -653,16 +813,20 @@ async def check_orders_and_notify(address: str, label: str, chat_id: int, thread
     current_prices = await hyperliquid.get_all_mids()
 
     changes = tracker.diff_orders(old_orders, new_orders)
+    enabled_groups = await storage.get_wallet_notify_groups(address) if changes else None
 
     for change in changes:
-        price = current_prices.get(change.coin)
-        text = tracker.format_order_change(change, label, address, current_price=price)
-        await bot.send_message(
-            chat_id, text,
-            message_thread_id=thread_id,
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
-        )
+        if enabled_groups is not None and "orders" not in enabled_groups:
+            pass  # skip send, but still update snapshots below
+        else:
+            price = current_prices.get(change.coin)
+            text = tracker.format_order_change(change, label, address, current_price=price)
+            await bot.send_message(
+                chat_id, text,
+                message_thread_id=thread_id,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
 
     new_oids = {o["oid"] for o in new_orders}
     old_oids = set(old_orders.keys())

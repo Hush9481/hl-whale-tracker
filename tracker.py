@@ -20,6 +20,10 @@ class ChangeType(Enum):
     MARGIN_ADDED    = "ДОДАНО МАРЖУ"
     ORDER_PLACED    = "ВИСТАВЛЕНО ОРДЕР"
     ORDER_CANCELLED = "СКАСОВАНО ОРДЕР"
+    TWAP_STARTED    = "ТВАП ЗАПУЩЕНО"
+    TWAP_FINISHED   = "ТВАП ЗАВЕРШЕНО"
+    TWAP_CANCELLED  = "ТВАП СКАСОВАНО"
+    TWAP_ERROR      = "ТВАП ПОМИЛКА ⚠️"
 
 
 @dataclass
@@ -35,6 +39,49 @@ class PositionChange:
     coin: str
     old_pos: Optional[dict]
     new_pos: Optional[dict]
+
+
+@dataclass
+class TwapChange:
+    change_type:   ChangeType
+    coin:          str
+    side:          str    # "BUY" or "SELL"
+    size:          float
+    executed_size: float
+    twap_id:       int
+    duration_min:  int
+
+
+# ── Фільтри сповіщень ────────────────────────────────────────────────────────
+
+NOTIFY_GROUPS: dict[str, set] = {
+    "positions": {ChangeType.OPENED, ChangeType.CLOSED, ChangeType.LIQUIDATED},
+    "changes":   {ChangeType.INCREASED, ChangeType.DECREASED, ChangeType.SIDE_FLIP},
+    "margin":    {ChangeType.MARGIN_REMOVED, ChangeType.MARGIN_ADDED},
+    "orders":    {ChangeType.ORDER_PLACED, ChangeType.ORDER_CANCELLED},
+    "twaps":     {ChangeType.TWAP_STARTED, ChangeType.TWAP_FINISHED,
+                  ChangeType.TWAP_CANCELLED, ChangeType.TWAP_ERROR},
+}
+
+GROUP_LABELS: dict[str, str] = {
+    "positions": "Позиції",
+    "changes":   "Зміни розміру",
+    "margin":    "Маржа",
+    "orders":    "Ліміт ордери",
+    "twaps":     "TWAP",
+}
+
+ALL_GROUPS: set[str] = set(NOTIFY_GROUPS.keys())
+
+_TYPE_TO_GROUP: dict[ChangeType, str] = {
+    ct: group
+    for group, types in NOTIFY_GROUPS.items()
+    for ct in types
+}
+
+
+def get_change_type_group(ct: ChangeType) -> Optional[str]:
+    return _TYPE_TO_GROUP.get(ct)
 
 
 def liq_distance_pct(pos: dict, current_price: float) -> Optional[float]:
@@ -299,6 +346,49 @@ def diff_orders(old: dict, new: list) -> list[OrderChange]:
             changes.append(OrderChange(ChangeType.ORDER_CANCELLED, order["coin"], order))
 
     return changes
+
+
+def format_twap_change(
+    change: TwapChange,
+    wallet_label: str,
+    address: str,
+    current_price: Optional[float] = None,
+) -> str:
+    emoji_map = {
+        ChangeType.TWAP_STARTED:   "⏱",
+        ChangeType.TWAP_FINISHED:  "✅",
+        ChangeType.TWAP_CANCELLED: "🛑",
+        ChangeType.TWAP_ERROR:     "⚠️",
+    }
+    emoji = emoji_map.get(change.change_type, "⏱")
+    short_addr = f"{address[:6]}...{address[-4:]}"
+    display = (
+        f"{wallet_label}  <code>{short_addr}</code>"
+        if wallet_label else f"<code>{short_addr}</code>"
+    )
+
+    side_emoji = "🟢" if change.side == "BUY" else "🔴"
+    side_str   = "BUY" if change.side == "BUY" else "SELL"
+
+    usd_str = ""
+    if current_price and current_price > 0 and change.size > 0:
+        usd_str = f"  (~<b>${change.size * current_price:,.0f}</b>)"
+
+    lines = [
+        f"{emoji} <b>{change.change_type.value}</b>  ·  {display}",
+        f"{side_emoji} <b>{side_str} TWAP</b>  {change.coin}",
+        f"{change.size:g} {change.coin}{usd_str}  ·  {change.duration_min} хв",
+    ]
+
+    if change.change_type != ChangeType.TWAP_STARTED and change.size > 0:
+        exec_pct = change.executed_size / change.size * 100
+        lines.append(f"Виконано: <b>{change.executed_size:g}</b>  ({exec_pct:.1f}%)")
+
+    lines.append(
+        f"\n🔗 <a href='https://app.hyperliquid.xyz/trade/{change.coin}'>Hyperliquid chart</a>"
+        f"  ·  <a href='https://hypurrscan.io/address/{address}'>Hypurrscan</a>"
+    )
+    return "\n".join(lines)
 
 
 def format_order_change(

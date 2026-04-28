@@ -26,6 +26,10 @@ async def init_db():
             await db.execute("ALTER TABLE watched_wallets ADD COLUMN pushover_min_usd REAL DEFAULT 0")
         except Exception:
             pass
+        try:
+            await db.execute("ALTER TABLE watched_wallets ADD COLUMN notify_groups TEXT DEFAULT NULL")
+        except Exception:
+            pass
         await db.execute("""
             CREATE TABLE IF NOT EXISTS position_snapshots (
                 address     TEXT NOT NULL,
@@ -205,5 +209,29 @@ async def delete_order_snapshot(address: str, oid: int):
         await db.execute(
             "DELETE FROM order_snapshots WHERE address = ? AND oid = ?",
             (address.lower(), oid)
+        )
+        await db.commit()
+
+
+async def get_wallet_notify_groups(address: str):
+    """Returns set of enabled group names, or None if all groups enabled (default)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT notify_groups FROM watched_wallets WHERE address = ?",
+            (address.lower(),)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row is None or row[0] is None:
+                return None
+            return set(row[0].split(",")) if row[0] else set()
+
+
+async def set_wallet_notify_groups(address: str, groups):
+    """Pass None to reset to all-enabled. Pass set of group names to restrict."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        value = ",".join(sorted(groups)) if groups is not None else None
+        await db.execute(
+            "UPDATE watched_wallets SET notify_groups = ? WHERE address = ?",
+            (value, address.lower())
         )
         await db.commit()

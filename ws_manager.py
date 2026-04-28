@@ -45,7 +45,7 @@ class HLWebSocket:
         self._subscribed.discard(address)
         self._pending.discard(address)
         if self._ws and not self._ws.closed:
-            for sub_type in ("userFills", "userEvents"):
+            for sub_type in ("userFills", "userEvents", "userTwapHistory"):
                 try:
                     await self._ws.send_json({
                         "method": "unsubscribe",
@@ -56,7 +56,7 @@ class HLWebSocket:
 
     async def _do_subscribe(self, address: str):
         try:
-            for sub_type in ("userFills", "userEvents"):
+            for sub_type in ("userFills", "userEvents", "userTwapHistory"):
                 await self._ws.send_json({
                     "method": "subscribe",
                     "subscription": {"type": sub_type, "user": address}
@@ -134,6 +134,14 @@ class HLWebSocket:
                 user = data.get("user", "").lower()
                 if user:
                     await self.on_event(user, "events", data)
+
+            elif channel == "userTwapHistory":
+                user = data.get("user", "").lower()
+                if user:
+                    history = data.get("twapHistory", [])
+                    if history:
+                        logger.info(f"WS TWAP event for {user[:8]}: {history}")
+                        await self.on_event(user, "twap", history)
 
         except Exception as e:
             logger.error(f"WS handle error: {e}")
