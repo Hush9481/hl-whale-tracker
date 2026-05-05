@@ -84,6 +84,22 @@ async def get_open_orders(address: str) -> list:
     return []
 
 
+async def get_twap_history(address: str) -> list:
+    """Повертає TWAP lifecycle events [{twapId, state, status, time}, ...]"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                HL_API_URL,
+                json={"type": "twapHistory", "user": address},
+                timeout=aiohttp.ClientTimeout(total=8)
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+    except Exception as e:
+        logger.error(f"Error fetching twapHistory for {address}: {e}")
+    return []
+
+
 async def get_account_value(address: str) -> Optional[float]:
     """Повертає загальну вартість акаунту в $"""
     state = await get_user_state(address)

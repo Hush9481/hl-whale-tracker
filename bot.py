@@ -200,40 +200,55 @@ async def check_and_notify(address: str, label: str, chat_id: int, thread_id: in
 
 # ─── WebSocket callback ──────────────────────────────────────────────────────
 
-async def _handle_twap_events(address: str, label: str, chat_id: int, thread_id, history: list):
+TWAP_POLL_INTERVAL = 15
+
+_TWAP_STATUS_MAP = {
+    "activated":  tracker.ChangeType.TWAP_STARTED,
+    "finished":   tracker.ChangeType.TWAP_FINISHED,
+    "terminated": tracker.ChangeType.TWAP_CANCELLED,
+    "error":      tracker.ChangeType.TWAP_ERROR,
+}
+
+
+async def check_twaps_and_notify(address: str, label: str, chat_id: int, thread_id):
     enabled = await storage.get_wallet_notify_groups(address)
     if enabled is not None and "twaps" not in enabled:
         return
 
+    history = await hyperliquid.get_twap_history(address)
+    if not history:
+        return
+
     prices = await hyperliquid.get_all_mids()
-    status_map = {
-        "activated":  tracker.ChangeType.TWAP_STARTED,
-        "finished":   tracker.ChangeType.TWAP_FINISHED,
-        "terminated": tracker.ChangeType.TWAP_CANCELLED,
-        "error":      tracker.ChangeType.TWAP_ERROR,
-    }
 
     for item in history:
-        state  = item.get("state", {})
-        status = item.get("status", "")
-        ct = status_map.get(status)
-        if ct is None:
+        twap_id    = item.get("twapId")
+        state      = item.get("state", {})
+        status_obj = item.get("status", {})
+        status     = status_obj.get("status", "") if isinstance(status_obj, dict) else str(status_obj)
+        ct = _TWAP_STATUS_MAP.get(status)
+
+        if ct is None or twap_id is None:
+            continue
+        if await storage.is_twap_event_seen(address, twap_id, status):
             continue
 
-        coin        = state.get("coin", "?")
-        is_buy      = state.get("is_buy", True)
-        size        = float(state.get("sz", 0))
-        executed_sz = float(state.get("executedSz", 0))
-        duration_ms = int(state.get("duration", 0))
-        duration_min = max(1, duration_ms // 60000) if duration_ms else 0
+        await storage.mark_twap_event_seen(address, twap_id, status)
+
+        coin         = state.get("coin", "?")
+        side_raw     = state.get("side", "A")
+        side         = "BUY" if side_raw == "B" else "SELL"
+        size         = float(state.get("sz", 0))
+        executed_sz  = float(state.get("executedSz", 0))
+        duration_min = int(state.get("minutes", 0))
 
         twap_change = tracker.TwapChange(
             change_type   = ct,
             coin          = coin,
-            side          = "BUY" if is_buy else "SELL",
+            side          = side,
             size          = size,
             executed_size = executed_sz,
-            twap_id       = state.get("twapId", 0),
+            twap_id       = twap_id,
             duration_min  = duration_min,
         )
         price = prices.get(coin)
@@ -246,6 +261,23 @@ async def _handle_twap_events(address: str, label: str, chat_id: int, thread_id,
         )
 
 
+async def twap_poll_loop():
+    await asyncio.sleep(15)
+    logger.info(f"TWAP poll loop started (interval={TWAP_POLL_INTERVAL}s)")
+    while True:
+        await asyncio.sleep(TWAP_POLL_INTERVAL)
+        try:
+            wallets = await storage.get_all_wallets()
+            for address, label, chat_id, thread_id in wallets:
+                try:
+                    await check_twaps_and_notify(address, label, chat_id, thread_id)
+                except Exception as e:
+                    logger.error(f"TWAP poll error {address[:8]}: {e}")
+                await asyncio.sleep(0.3)
+        except Exception as e:
+            logger.error(f"TWAP poll loop error: {e}")
+
+
 async def on_ws_event(address: str, event_type: str, data):
     wallet = await storage.get_wallet(address)
     if not wallet:
@@ -254,7 +286,8 @@ async def on_ws_event(address: str, event_type: str, data):
     logger.info(f"WS event [{event_type}] for {address[:8]}...")
 
     if event_type == "twap":
-        await _handle_twap_events(address, label, chat_id, thread_id, data)
+        # WS triggered — immediate poll (polling handles dedup)
+        await check_twaps_and_notify(address, label, chat_id, thread_id)
         return
 
     await asyncio.sleep(0.6)

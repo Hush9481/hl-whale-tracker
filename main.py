@@ -3,7 +3,7 @@ import logging
 
 import storage
 import bot as bot_module
-from bot import bot, dp, margin_poll_loop, order_poll_loop, on_ws_event
+from bot import bot, dp, margin_poll_loop, order_poll_loop, twap_poll_loop, on_ws_event
 from ws_manager import HLWebSocket
 
 logging.basicConfig(
@@ -31,6 +31,7 @@ async def main():
 
     asyncio.create_task(margin_poll_loop())
     asyncio.create_task(order_poll_loop())
+    asyncio.create_task(twap_poll_loop())
 
     logger.info("Starting Telegram bot...")
     await dp.start_polling(bot, allowed_updates=["message", "callback_query"])

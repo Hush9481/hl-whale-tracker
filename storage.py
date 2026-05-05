@@ -54,6 +54,15 @@ async def init_db():
                 PRIMARY KEY (address, oid)
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS twap_seen (
+                address  TEXT NOT NULL,
+                twap_id  INTEGER NOT NULL,
+                status   TEXT NOT NULL,
+                seen_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (address, twap_id, status)
+            )
+        """)
         await db.commit()
 
 
@@ -209,6 +218,24 @@ async def delete_order_snapshot(address: str, oid: int):
         await db.execute(
             "DELETE FROM order_snapshots WHERE address = ? AND oid = ?",
             (address.lower(), oid)
+        )
+        await db.commit()
+
+
+async def is_twap_event_seen(address: str, twap_id: int, status: str) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT 1 FROM twap_seen WHERE address=? AND twap_id=? AND status=?",
+            (address.lower(), twap_id, status)
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+
+async def mark_twap_event_seen(address: str, twap_id: int, status: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO twap_seen (address, twap_id, status) VALUES (?, ?, ?)",
+            (address.lower(), twap_id, status)
         )
         await db.commit()
 

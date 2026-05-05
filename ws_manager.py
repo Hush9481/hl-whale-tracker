@@ -135,13 +135,17 @@ class HLWebSocket:
                 if user:
                     await self.on_event(user, "events", data)
 
-            elif channel == "userTwapHistory":
-                user = data.get("user", "").lower()
+            elif channel in ("userTwapHistory", "twapHistory"):
+                # user is inside state of each item
+                history = data if isinstance(data, list) else data.get("twapHistory", data.get("history", []))
+                user = ""
+                if history and isinstance(history, list):
+                    user = history[0].get("state", {}).get("user", "").lower()
+                if not user and isinstance(data, dict):
+                    user = data.get("user", "").lower()
+                logger.info(f"WS TWAP channel={channel} user={user[:8] if user else '?'} items={len(history) if isinstance(history, list) else '?'}")
                 if user:
-                    history = data.get("twapHistory", [])
-                    if history:
-                        logger.info(f"WS TWAP event for {user[:8]}: {history}")
-                        await self.on_event(user, "twap", history)
+                    await self.on_event(user, "twap", history)
 
         except Exception as e:
             logger.error(f"WS handle error: {e}")
